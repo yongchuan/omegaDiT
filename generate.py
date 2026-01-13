@@ -84,10 +84,12 @@ def main(args):
         assert args.resolution == 256
         assert args.mode == "sde"
         ckpt = torch.load(args.ckpt, map_location=f'cuda:{device}', weights_only=False)
-        state_dict = ckpt['ema'] if isinstance(ckpt, dict) and 'ema' in ckpt else ckpt
+        # state_dict = ckpt['ema'] if isinstance(ckpt, dict) and 'ema' in ckpt else ckpt
+        state_dict = ckpt['model'] if isinstance(ckpt, dict) and 'model' in ckpt else ckpt
     else:
         ckpt = torch.load(ckpt_path, map_location=f'cuda:{device}', weights_only=False)
-        state_dict = ckpt['ema'] if isinstance(ckpt, dict) and 'ema' in ckpt else ckpt
+        # state_dict = ckpt['ema'] if isinstance(ckpt, dict) and 'ema' in ckpt else ckpt
+        state_dict = ckpt['model'] if isinstance(ckpt, dict) and 'model' in ckpt else ckpt
 
     model.load_state_dict(state_dict)
     #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!

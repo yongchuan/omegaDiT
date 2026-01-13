@@ -7,6 +7,7 @@ from pathlib import Path
 from collections import OrderedDict
 import json
 from typing import List, Optional, Union
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 import numpy as np
 import torch
@@ -25,7 +26,7 @@ from utils import load_encoders
 
 from dataset import CustomDataset
 from json_label_dataset import JsonLabelDataset
-from preprocessing.encoders import load_invae
+from preprocessing.encoders import load_invae, load_vavae
 # import wandb_utils
 import wandb
 import math
@@ -93,18 +94,18 @@ def sample_posterior(latents, latents_scale=1., latents_bias=0.):
     z = (latents * latents_scale + latents_bias) 
     return z 
 
-@torch.no_grad()
-def update_ema(ema_model, model, decay=0.9999):
-    """
-    Step the EMA model towards the current model.
-    """
-    ema_params = OrderedDict(ema_model.named_parameters())
-    model_params = OrderedDict(model.named_parameters())
-
-    for name, param in model_params.items():
-        name = name.replace("module.", "")
-        # TODO: Consider applying only to params that require_grad to avoid small numerical changes of pos_embed
-        ema_params[name].mul_(decay).add_(param.data, alpha=1 - decay)
+# @torch.no_grad()
+# def update_ema(ema_model, model, decay=0.9999):
+#     """
+#     Step the EMA model towards the current model.
+#     """
+#     ema_params = OrderedDict(ema_model.named_parameters())
+#     model_params = OrderedDict(model.named_parameters())
+#
+#     for name, param in model_params.items():
+#         name = name.replace("module.", "")
+#         # TODO: Consider applying only to params that require_grad to avoid small numerical changes of pos_embed
+#         ema_params[name].mul_(decay).add_(param.data, alpha=1 - decay)
 
 
 def create_logger(logging_dir):
@@ -187,12 +188,14 @@ def main(args):
 
     # Load custom invae model
     if accelerator.is_main_process:
-        _ = load_invae(args.vae_name, device=device)
+        # _ = load_invae(args.vae_name, device=device)
+        _ = load_vavae("tokenizer/configs/vavae_f16d32_vfdinov2.yaml", device=device)
 
     # Make all processes wait until rank 0 is done
     accelerator.wait_for_everyone()
-    vae = load_invae(args.vae_name, device=device)
-    vae.eval().requires_grad_(False)
+    # vae = load_invae(args.vae_name, device=device)
+    vae = load_vavae("tokenizer/configs/vavae_f16d32_vfdinov2.yaml", device=device)
+    vae.model.requires_grad_(False)
     channels = 32  # invae uses 32 channels
 
     # Load CLIP model for text encoding (only when using JsonLabelDataset)
@@ -232,8 +235,8 @@ def main(args):
     )
 
     model = model.to(device)
-    ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
-    requires_grad(ema, False)
+    #ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
+    #requires_grad(ema, False)
     
 
     # create loss function
@@ -283,9 +286,9 @@ def main(args):
         logger.info(f"Dataset contains {len(train_dataset):,} images ({args.data_dir})")
     
     # Prepare models for training:
-    update_ema(ema, model, decay=0)  # Ensure EMA is initialized with synced weights
+    # update_ema(ema, model, decay=0)  # Ensure EMA is initialized with synced weights
     model.train()  # important! This enables embedding dropout for classifier-free guidance
-    ema.eval()  # EMA model should always be in eval mode
+    # ema.eval()  # EMA model should always be in eval mode
     
     # resume:
     global_step = 0
@@ -296,7 +299,7 @@ def main(args):
             map_location='cpu', weights_only=False,
             )
         model.load_state_dict(ckpt['model'])
-        ema.load_state_dict(ckpt['ema'])
+        # ema.load_state_dict(ckpt['ema'])
         optimizer.load_state_dict(ckpt['opt'])
         global_step = ckpt['steps']
 
@@ -396,8 +399,8 @@ def main(args):
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
 
-                if accelerator.sync_gradients:
-                    update_ema(ema, model) # change ema function
+                # if accelerator.sync_gradients:
+                #     update_ema(ema, model) # change ema function
             
             ### enter
             if accelerator.sync_gradients:
@@ -407,7 +410,7 @@ def main(args):
                 if accelerator.is_main_process:
                     checkpoint = {
                         "model": model.module.state_dict(),
-                        "ema": ema.state_dict(),
+                        # "ema": ema.state_dict(),
                         "opt": optimizer.state_dict(),
                         "args": args,
                         "steps": global_step,
@@ -418,7 +421,7 @@ def main(args):
 
             if (global_step == 1 or (global_step % args.sampling_steps == 0 and global_step > 0)):
                 sampling_kwargs = dict(
-                        model=ema,
+                        model=model,  # changed from ema to model
                         latents=xT.clone(),
                         y=ys.clone(),
                         num_steps=args.num_sample_steps,

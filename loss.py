@@ -90,7 +90,7 @@ class SILoss:
         else:
             raise NotImplementedError()
 
-        model_output, zs_tilde, cls_output = model(model_input, time_input.flatten(), **model_kwargs)
+        model_output, zs_tilde = model(model_input, time_input.flatten(), **model_kwargs)
 
         #denoising_loss
         denoising_loss = mean_flat((model_output - model_target) ** 2)

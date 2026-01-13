@@ -313,19 +313,19 @@ class FinalLayer(nn.Module):
         super().__init__()
         self.norm_final = nn.RMSNorm(hidden_size, elementwise_affine=True, eps=1e-6)
         self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
-        # self.adaLN_modulation = nn.Sequential(
-        #     nn.SiLU(),
-        #     nn.Linear(hidden_size, 2 * hidden_size, bias=True)
-        # )
-        self.adaLN_modulation_act = nn.SiLU()
-        self.adaLN_modulation_linear1 = nn.Linear(hidden_size, hidden_size, bias=True)
-        self.adaLN_modulation_linear2 = nn.Linear(hidden_size, hidden_size, bias=True)
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(hidden_size, 2 * hidden_size, bias=True)
+        )
+        # self.adaLN_modulation_act = nn.SiLU()
+        # self.adaLN_modulation_linear1 = nn.Linear(hidden_size, hidden_size, bias=True)
+        # self.adaLN_modulation_linear2 = nn.Linear(hidden_size, hidden_size, bias=True)
 
     def forward(self, x, c):
-        # shift, scale = self.adaLN_modulation(c).chunk(2, dim=-1)
-        act = self.adaLN_modulation_act(c)
-        shift = self.adaLN_modulation_linear1(act)
-        scale = self.adaLN_modulation_linear2(act)
+        shift, scale = self.adaLN_modulation(c).chunk(2, dim=-1)
+        # act = self.adaLN_modulation_act(c)
+        # shift = self.adaLN_modulation_linear1(act)
+        # scale = self.adaLN_modulation_linear2(act)
         x = modulate(self.norm_final(x), shift, scale)
         x = self.linear(x)
         return x
@@ -410,9 +410,9 @@ class SiT(nn.Module):
                 )
             )
         self.blocks = nn.ModuleList(blocks)
-        # self.projectors = nn.ModuleList([
-        #     build_mlp(hidden_size, projector_dim, z_dim) for z_dim in z_dims
-        #     ])
+        self.projectors = nn.ModuleList([
+            build_mlp(hidden_size, projector_dim, z_dim) for z_dim in z_dims
+            ])
 
         self.final_layer = FinalLayer(decoder_hidden_size, patch_size, self.out_channels)
 
@@ -460,15 +460,15 @@ class SiT(nn.Module):
         nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
 
         # Zero-out adaLN modulation layers in SiT blocks:
-        # for block in self.blocks:
-        #     nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
-        #     nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
+        for block in self.blocks:
+            nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
+            nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
 
         # Zero-out output layers:
-        # nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
-        # nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
-        # nn.init.constant_(self.final_layer.linear.weight, 0)
-        # nn.init.constant_(self.final_layer.linear.bias, 0)
+        nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
+        nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
+        nn.init.constant_(self.final_layer.linear.weight, 0)
+        nn.init.constant_(self.final_layer.linear.bias, 0)
         # nn.init.constant_(self.final_layer.linear_cls.weight, 0)
         # nn.init.constant_(self.final_layer.linear_cls.bias, 0)
 
@@ -535,7 +535,7 @@ class SiT(nn.Module):
 
         B, T_keep, C = x_sparse.shape
         assert T_full >= T_keep - TT
-        self.mask_token.register_hook(save_grad('dw:'))
+        # self.mask_token.register_hook(save_grad('dw:'))
         x_pad = self.mask_token.expand(B, T_full, C).clone()
         x_t = x_sparse[:, :TT, :]
         x_img = x_sparse[:, TT:, :]
@@ -600,10 +600,10 @@ class SiT(nn.Module):
             x_enc = self.blocks[i](x_enc, c, self.feat_rope, rope_ids_enc)  # (N, T, D)
         # print("x_enc:", x_enc[:, 77:, :])
         # Use encoder output for z-projections (REPA / SPRINT z_t)
-        # zs = [
-        #     projector(x_enc.reshape(-1, D)).reshape(N, -1, z_dim)
-        #     for projector, z_dim in zip(self.projectors, self.z_dims)
-        # ]
+        zs = [
+            projector(x_enc.reshape(-1, D)).reshape(N, -1, z_dim)
+            for projector, z_dim in zip(self.projectors, self.z_dims)
+        ]
 
         # ------------------------------------------------------------------
         # 2) Drop tokens to build sparse input to gθ (SPRINT sparse path)
@@ -699,7 +699,7 @@ class SiT(nn.Module):
         x_out = self.final_layer(img_o, c)
         x_out = self.unpatchify(x_out)
 
-        return x_out, ids_keep
+        return x_out, zs
 
 
 #################################################################################
@@ -803,60 +803,60 @@ SiT_models = {
     'SiT-S/1':  SiT_S_1,   'SiT-S/2':  SiT_S_2,   'SiT-S/4':  SiT_S_4,
 }
 
-grads = {}
-
-def save_grad(name):
-    def hook(grad):
-        print(name, grad.shape, grad, name)
-        grads[name] = grad
-    return hook
-
-def save_grad2(name):
-    def hook(grad):
-        print(name, grad.shape, grad[:, 77:, :], name)
-        grads[name] = grad
-    return hook
-
-class EncodeTensor(JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, torch.Tensor):
-            return obj.cpu().detach().numpy().tolist()
-
-torch.set_printoptions(precision=12)
-torch.manual_seed(23)
-
-dit = SiT(input_size=16, in_channels=32, depth=12, hidden_size=768, decoder_hidden_size=768, patch_size=1, num_heads=12)
-
-print(dit)
-
-N = 2
-C = 32
-H = 16
-W = 16
-
-TS = 77
-TD = 768
-
-x = torch.rand(N, C, H, W)
-x.requires_grad_(True)
-
-context = torch.randn(N, TS, TD)
-context.requires_grad_(True)
-
-t = torch.tensor([0.1, 0.8], dtype=torch.float32)
-
-# context.view(N * TS, TD)
-
-out, ids_keep = dit(x, t, context)
-
-print("out:", out.shape, out)
-print(ids_keep.shape, ids_keep)
-
-delta = torch.rand(N, C, H, W)
-
-out.backward(delta)
-
-print(x.grad)
+# grads = {}
+#
+# def save_grad(name):
+#     def hook(grad):
+#         print(name, grad.shape, grad, name)
+#         grads[name] = grad
+#     return hook
+#
+# def save_grad2(name):
+#     def hook(grad):
+#         print(name, grad.shape, grad[:, 77:, :], name)
+#         grads[name] = grad
+#     return hook
+#
+# class EncodeTensor(JSONEncoder):
+#     def default(self, obj):
+#         if isinstance(obj, torch.Tensor):
+#             return obj.cpu().detach().numpy().tolist()
+#
+# torch.set_printoptions(precision=12)
+# torch.manual_seed(23)
+#
+# dit = SiT(input_size=16, in_channels=32, depth=12, hidden_size=768, decoder_hidden_size=768, patch_size=1, num_heads=12)
+#
+# print(dit)
+#
+# N = 2
+# C = 32
+# H = 16
+# W = 16
+#
+# TS = 77
+# TD = 768
+#
+# x = torch.rand(N, C, H, W)
+# x.requires_grad_(True)
+#
+# context = torch.randn(N, TS, TD)
+# context.requires_grad_(True)
+#
+# t = torch.tensor([0.1, 0.8], dtype=torch.float32)
+#
+# # context.view(N * TS, TD)
+#
+# out, zs = dit(x, t, context)
+#
+# print("out:", out.shape, out)
+# print("zs:", zs)
+#
+# delta = torch.rand(N, C, H, W)
+#
+# out.backward(delta)
+#
+# print(x.grad)
 
 # state_dict = {"x": x}
 # with open('D:\\models\\dit_x.json', 'w') as json_file:
