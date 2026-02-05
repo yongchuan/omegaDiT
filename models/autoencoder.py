@@ -146,21 +146,21 @@ class AttnBlock(nn.Module):
         q = q.permute(0, 2, 1)  # b,hw,c
         k = k.reshape(b, c, h * w)  # b,c,hw
         w_ = torch.bmm(q, k)  # b,hw,hw    w[b,i,j]=sum_c q[b,i,c]k[b,c,j]
-        print("w_1", w_.shape, w_)
+        # print("w_1", w_.shape, w_)
         w_ = w_ * (int(c) ** (-0.5))
-        print("w_2", w_.shape, w_[0][0])
+        # print("w_2", w_.shape, w_[0][0])
         w_ = torch.nn.functional.softmax(w_, dim=2)
-        print("w_", w_)
+        # print("w_", w_)
         # attend to values
         v = v.reshape(b, c, h * w)
         w_ = w_.permute(0, 2, 1)  # b,hw,hw (first hw of k, second of q)
         h_ = torch.bmm(v, w_)  # b, c,hw (hw of q) h_[b,c,j] = sum_i v[b,c,i] w_[b,i,j]
-        print("sv", h_[0][0])
+        # print("sv", h_[0][0])
         h_ = h_.reshape(b, c, h, w)
 
         h_ = self.proj_out(h_)
-        print("attn-x", x)
-        print("attn-out", x + h_)
+        # print("attn-x", x)
+        # print("attn-out", x + h_)
         return x + h_
 
 
@@ -260,10 +260,10 @@ class Encoder(nn.Module):
         for i_level in range(self.num_resolutions):
             for i_block in range(self.num_res_blocks):
                 h = self.down[i_level].block[i_block](hs[-1], temb)
-                print("resnet:", h)
+                # print("resnet:", h)
                 if len(self.down[i_level].attn) > 0:
                     h = self.down[i_level].attn[i_block](h)
-                    print("attn:", h)
+                #    print("attn:", h)
                 hs.append(h)
             if i_level != self.num_resolutions - 1:
                 hs.append(self.down[i_level].downsample(hs[-1]))
@@ -274,12 +274,12 @@ class Encoder(nn.Module):
         h = self.mid.block_1(h, temb)
         h = self.mid.attn_1(h)
         h = self.mid.block_2(h, temb)
-        print("h1", h)
+        # print("h1", h)
         # end
         h = self.norm_out(h)
         h = nonlinearity(h)
         h = self.conv_out(h)
-        print(h)
+        # print(h)
         return h
 
 

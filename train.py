@@ -64,9 +64,10 @@ def get_clip_prompt_embeds(
     )
 
     text_input_ids = text_inputs.input_ids
-    prompt_embeds = text_encoder(text_input_ids.to(device), output_hidden_states=False)
+    prompt_embeds = text_encoder(text_input_ids.to(device), output_hidden_states=True)
     # Use pooled output of CLIPTextModel
-    prompt_embeds = prompt_embeds.pooler_output
+    # prompt_embeds = prompt_embeds.pooler_output
+    prompt_embeds = prompt_embeds.hidden_states[-2]
     prompt_embeds = prompt_embeds.to(device=device)
 
     return prompt_embeds
@@ -219,9 +220,9 @@ def main(args):
         clip_text_encoder = clip_model.text_model
     
     # invae uses 0.3099 scaling factor
-    scaling_factor = 0.3099
-    latents_scale = torch.tensor([scaling_factor] * channels).view(1, channels, 1, 1).to(device)
-    latents_bias = torch.zeros(channels).view(1, channels, 1, 1).to(device)
+    #scaling_factor = 0.3099
+    #latents_scale = torch.tensor([scaling_factor] * channels).view(1, channels, 1, 1).to(device)
+    #latents_bias = torch.zeros(channels).view(1, channels, 1, 1).to(device)
 
     z_dims = [encoder.embed_dim for encoder in encoders] if args.enc_type != 'None' else [0]
     block_kwargs = {"fused_attn": args.fused_attn, "qk_norm": args.qk_norm}
@@ -327,19 +328,19 @@ def main(args):
     )
 
     # Labels to condition the model with (feel free to change):
-    sample_batch_size = 64 // accelerator.num_processes
-    gt_raw_images, gt_xs, _ = next(iter(train_dataloader))
-    assert gt_raw_images.shape[-1] == args.resolution
-    gt_xs = gt_xs[:sample_batch_size]
-    gt_xs = sample_posterior(
-        gt_xs.to(device), latents_scale=latents_scale, latents_bias=latents_bias
-        )
-    ys = torch.randint(1000, size=(sample_batch_size,), device=device)
-    ys = ys.to(device)
+    #sample_batch_size = 64 // accelerator.num_processes
+    #gt_raw_images, gt_xs, _ = next(iter(train_dataloader))
+    #assert gt_raw_images.shape[-1] == args.resolution
+    #gt_xs = gt_xs[:sample_batch_size]
+    #gt_xs = sample_posterior(
+        #gt_xs.to(device), latents_scale=latents_scale, latents_bias=latents_bias
+       # )
+    #ys = torch.randint(1000, size=(sample_batch_size,), device=device)
+    #ys = ys.to(device)
     # Create sampling noise:
-    n = ys.size(0)
-    xT = torch.randn((n, channels, latent_size, latent_size), device=device)
-    cls_z = torch.randn((n, encoders[0].embed_dim), device=device)
+    #n = ys.size(0)
+    #xT = torch.randn((n, channels, latent_size, latent_size), device=device)
+    #cls_z = torch.randn((n, encoders[0].embed_dim), device=device)
     
     if accelerator.is_main_process:
         sample_dir = os.path.join(args.output_dir, args.exp_name, "samples")
@@ -365,7 +366,7 @@ def main(args):
             
             z = None
             with torch.no_grad():
-                x = sample_posterior(x, latents_scale=latents_scale, latents_bias=latents_bias)
+                #x = sample_posterior(x, latents_scale=latents_scale, latents_bias=latents_bias)
                 zs = []
                 with accelerator.autocast():
                     for encoder, encoder_type, arch in zip(encoders, encoder_types, architectures):
@@ -373,29 +374,28 @@ def main(args):
                         z = encoder.forward_features(raw_image_)
                         if 'dinov2' in encoder_type:
                             dense_z = z['x_norm_patchtokens']
-                            cls_token = z['x_norm_clstoken']
-                            dense_z = torch.cat([cls_token.unsqueeze(1), dense_z], dim=1)
+                            #cls_token = z['x_norm_clstoken']
+                            #dense_z = torch.cat([cls_token.unsqueeze(1), dense_z], dim=1)
                         else:
                             exit()
                         zs.append(dense_z)
 
             with accelerator.accumulate(model):
                 model_kwargs = dict(y=labels)
-                loss1, proj_loss1, time_input, noises, loss2, cfm_loss, cfm_loss_cls = loss_fn(model, x, model_kwargs, zs=zs,
-                                                                       cls_token=cls_token,
+                loss1, proj_loss1, time_input, noises, cfm_loss = loss_fn(model, x, model_kwargs, zs=zs,
+                                                                       cls_token=None,
                                                                        time_input=None, noises=None)
                 loss_mean = loss1.mean()
-                loss_mean_cls = loss2.mean() * args.cls
                 proj_loss_mean = proj_loss1.mean() * args.proj_coeff
                 cfm_loss_mean = cfm_loss.mean() * args.cfm_coeff
-                loss = loss_mean + proj_loss_mean + loss_mean_cls + cfm_loss_mean 
+                loss = loss_mean + proj_loss_mean + cfm_loss_mean 
 
 
                 ## optimization
                 accelerator.backward(loss)
-                if accelerator.sync_gradients:
-                    params_to_clip = model.parameters()
-                    grad_norm = accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                #if accelerator.sync_gradients:
+                    #params_to_clip = model.parameters()
+                    #grad_norm = accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
 
@@ -409,7 +409,7 @@ def main(args):
             if global_step % args.checkpointing_steps == 0 and global_step > 0:
                 if accelerator.is_main_process:
                     checkpoint = {
-                        "model": model.module.state_dict(),
+                        "model": model.state_dict(),
                         # "ema": ema.state_dict(),
                         "opt": optimizer.state_dict(),
                         "args": args,
@@ -419,43 +419,13 @@ def main(args):
                     torch.save(checkpoint, checkpoint_path)
                     logger.info(f"Saved checkpoint to {checkpoint_path}")
 
-            if (global_step == 1 or (global_step % args.sampling_steps == 0 and global_step > 0)):
-                sampling_kwargs = dict(
-                        model=model,  # changed from ema to model
-                        latents=xT.clone(),
-                        y=ys.clone(),
-                        num_steps=args.num_sample_steps,
-                        heun=False,
-                        cfg_scale=args.cfg_scale,
-                        guidance_low=args.guidance_low,
-                        guidance_high=args.guidance_high,
-                        path_type=args.path_type,
-                        cls_latents=cls_z.clone(),
-                        args=args,
-                    )
-                samples = euler_maruyama_sampler(**sampling_kwargs).to(torch.float32)
-
-                samples = vae.decode((samples - latents_bias) / latents_scale).sample
-
-                # decode to pixels
-                samples = (samples + 1) / 2.
-                samples = samples.clamp(0, 1).contiguous()
-                accelerator.wait_for_everyone()
-                gathered = accelerator.gather(samples).contiguous()
-                if accelerator.is_main_process:
-                    grid = array2grid(gathered)
-                    Image.fromarray(grid).save(f"{sample_dir}/samples_step_{global_step}.png")
-                    logger.info(f"Saved samples at step {global_step}")
-                    if global_step % 50000 == 0:
-                        accelerator.log({"samples": wandb.Image(grid, file_type="jpg")}, step=global_step)
-
             logs = {
                 "loss_final": accelerator.gather(loss).mean().detach().item(),
                 "loss_mean": accelerator.gather(loss_mean).mean().detach().item(),
                 "proj_loss": accelerator.gather(proj_loss_mean).mean().detach().item(),
-                "loss_mean_cls": accelerator.gather(loss_mean_cls).mean().detach().item(),
-                "cfm_loss": accelerator.gather(cfm_loss_mean).mean().detach().item(),
-                "grad_norm": accelerator.gather(grad_norm).mean().detach().item()
+                #"loss_mean_cls": accelerator.gather(loss_mean_cls).mean().detach().item(),
+                "cfm_loss": accelerator.gather(cfm_loss_mean).mean().detach().item()
+                #"grad_norm": accelerator.gather(grad_norm).mean().detach().item()
             }
 
             log_message = ", ".join(f"{key}: {value:.6f}" for key, value in logs.items())
@@ -491,7 +461,7 @@ def parse_args(input_args=None):
     # model
     parser.add_argument("--model", type=str)
     parser.add_argument("--num-classes", type=int, default=1000)
-    parser.add_argument("--fused-attn", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--fused-attn", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--qk-norm",  action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--ops-head", type=int, default=16)
 
@@ -513,7 +483,7 @@ def parse_args(input_args=None):
     parser.add_argument("--max-train-steps", type=int, default=400000)
     parser.add_argument("--checkpointing-steps", type=int, default=10000)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
-    parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--learning-rate", type=float, default=2e-5)
     parser.add_argument("--adam-beta1", type=float, default=0.9, help="The beta1 parameter for the Adam optimizer.")
     parser.add_argument("--adam-beta2", type=float, default=0.999, help="The beta2 parameter for the Adam optimizer.")
     parser.add_argument("--adam-weight-decay", type=float, default=0., help="Weight decay to use.")
@@ -558,3 +528,4 @@ if __name__ == "__main__":
     args = parse_args()
     
     main(args)
+

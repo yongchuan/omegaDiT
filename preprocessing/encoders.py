@@ -11,6 +11,7 @@ import os
 import warnings
 import numpy as np
 import torch
+from torchvision import transforms
 try:
     from torch_utils import persistence
 except ImportError:
@@ -85,6 +86,10 @@ class InvaeEncoder(Encoder):
 #----------------------------------------------------------------------------
 # Pre-trained VAVAE encoder.
 
+transform = transforms.Compose([
+    transforms.ToTensor(),  # 转换为张量 (0-1范围)
+])
+
 @persistence.persistent_class
 class VavaeEncoder(Encoder):
     def __init__(self,
@@ -119,6 +124,9 @@ class VavaeEncoder(Encoder):
         """
         self.init(x.device)
         # VA_VAE.encode_images expects images normalized to [-1, 1]
+        # x = x.to(torch.float32) / 255
+        # x = transform(x)
+        # x = x.to(torch.float32)
         x = x.to(torch.float32) / 127.5 - 1
         # Use VA_VAE's encode_images method which handles batching internally
         latents = self._vae.encode_images(x)

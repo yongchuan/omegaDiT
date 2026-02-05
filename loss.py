@@ -110,9 +110,11 @@ class SILoss:
         # cfm_target_cls = torch.roll(cls_target, shifts=1, dims=0)
         if self.cfm_weighting == "uniform":
             cfm_loss = -((model_output - cfm_target) ** 2).mean()
+            #cfm_loss = -((model_output - cfm_target) ** 2)
             # cfm_loss_cls = -((cls_output - cfm_target_cls) ** 2).mean()
         elif self.cfm_weighting == "linear":
             cfm_loss = -(((model_output - cfm_target) ** 2) * time_input).mean()
             # cfm_loss_cls = -(((cls_output - cfm_target_cls) ** 2) * time_input).mean()
 
         return denoising_loss, proj_loss, time_input, noises, cfm_loss
+

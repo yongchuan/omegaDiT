@@ -23,7 +23,50 @@ import math
 import argparse
 from samplers import euler_maruyama_sampler, euler_maruyama_sampler_path_drop
 from utils import download_model
+from typing import List, Optional, Union
+from modelscope import CLIPModel, CLIPProcessor, CLIPConfig
+from preprocessing.encoders import load_invae, load_vavae
 
+def get_clip_prompt_embeds(
+        tokenizer,
+        text_encoder,
+        prompt: Union[str, List[str]],
+        num_images_per_prompt: int = 1,
+        device: Optional[torch.device] = 0,
+):
+
+    prompt = [prompt] if isinstance(prompt, str) else prompt
+    batch_size = len(prompt)
+
+    # if isinstance(self, TextualInversionLoaderMixin):
+    #     prompt = self.maybe_convert_prompt(prompt, self.tokenizer)
+
+    text_inputs = tokenizer(
+        prompt,
+        padding="max_length",
+        max_length=77,
+        truncation=True,
+        return_overflowing_tokens=False,
+        return_length=False,
+        return_tensors="pt",
+    )
+
+    text_input_ids = text_inputs.input_ids
+    # untruncated_ids = tokenizer(prompt, padding="longest", return_tensors="pt").input_ids
+    # if untruncated_ids.shape[-1] >= text_input_ids.shape[-1] and not torch.equal(text_input_ids, untruncated_ids):
+    #    removed_text = tokenizer.batch_decode(untruncated_ids[:, 77 - 1: -1])
+    #    print("The following part of your input was truncated because CLIP can only handle sequences up to"
+    #        f" {77} tokens: {removed_text}")
+    prompt_embeds = text_encoder(text_input_ids.to(device), output_hidden_states=True)
+    # Use pooled output of CLIPTextModel
+    # prompt_embeds = prompt_embeds.pooler_output
+    prompt_embeds = prompt_embeds.hidden_states[-2]
+    prompt_embeds = prompt_embeds.to(device=device)
+    # duplicate text embeddings for each generation per prompt, using mps friendly method
+    # prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
+    # prompt_embeds = prompt_embeds.view(batch_size * num_images_per_prompt, -1)
+
+    return prompt_embeds
 
 def create_npz_from_sample_folder(sample_dir, num=50_000):
     """
@@ -41,6 +84,10 @@ def create_npz_from_sample_folder(sample_dir, num=50_000):
     print(f"Saved .npz file to {npz_path} [shape={samples.shape}].")
     return npz_path
 
+def get_latent_stats(features_dir):
+        latent_stats_cache_file = os.path.join(features_dir, "latents_stats.pt")
+        latent_stats = torch.load(latent_stats_cache_file)
+        return latent_stats['mean'], latent_stats['std']
 
 def main(args):
     """
@@ -84,12 +131,10 @@ def main(args):
         assert args.resolution == 256
         assert args.mode == "sde"
         ckpt = torch.load(args.ckpt, map_location=f'cuda:{device}', weights_only=False)
-        # state_dict = ckpt['ema'] if isinstance(ckpt, dict) and 'ema' in ckpt else ckpt
-        state_dict = ckpt['model'] if isinstance(ckpt, dict) and 'model' in ckpt else ckpt
+        state_dict = ckpt['ema'] if isinstance(ckpt, dict) and 'ema' in ckpt else ckpt
     else:
         ckpt = torch.load(ckpt_path, map_location=f'cuda:{device}', weights_only=False)
-        # state_dict = ckpt['ema'] if isinstance(ckpt, dict) and 'ema' in ckpt else ckpt
-        state_dict = ckpt['model'] if isinstance(ckpt, dict) and 'model' in ckpt else ckpt
+        state_dict = ckpt['ema'] if isinstance(ckpt, dict) and 'ema' in ckpt else ckpt
 
     model.load_state_dict(state_dict)
     #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -97,11 +142,18 @@ def main(args):
 
     model.eval()  # important!
     # Load invae model using load_invae function
-    if rank == 0:
-        _ = load_invae("REPA-E/e2e-invae", device=torch.device("cpu"))
-    dist.barrier()
-    vae = load_invae("REPA-E/e2e-invae", device=torch.device(f"cuda:{device}"))
+    # if rank == 0:
+    #     _ = load_invae("REPA-E/e2e-invae", device=torch.device("cpu"))
+    # dist.barrier()
+    # vae = load_invae("REPA-E/e2e-invae", device=torch.device(f"cuda:{device}"))
+    vae = load_vavae("tokenizer/configs/vavae_f16d32_vfdinov2.yaml", device=device)
+    vae.model.requires_grad_(False)
+    # channels = 32  # invae uses 32 channels
 
+    latent_mean, latent_std = get_latent_stats("/home/home/omega/data_dir/vae-in/")
+    # move to device
+    latent_mean = latent_mean.clone().detach().to(device)
+    latent_std = latent_std.clone().detach().to(device)
 
     # Create folder to save samples:
     model_string_name = args.model.replace("/", "-")
@@ -149,34 +201,61 @@ def main(args):
     assert samples_needed_this_gpu % n == 0, "samples_needed_this_gpu must be divisible by the per-GPU batch size"
     iterations = int(samples_needed_this_gpu // n)
 
+    model_id = "AI-ModelScope/CLIP-GmP-ViT-L-14"
+    clip_config = CLIPConfig.from_pretrained(model_id)
+    max_tokens = 77
+    clip_model = CLIPModel.from_pretrained(model_id, torch_dtype=torch.float32, config=clip_config).to(device)
+    clip_processor = CLIPProcessor.from_pretrained(model_id, padding="max_length", max_length=max_tokens,
+                                                   return_tensors="pt", truncation=True)
+
+
+
     if need_sampling:
         pbar = range(iterations)
         pbar = tqdm(pbar) if rank == 0 else pbar
         total = 0
+
+        labels = [None] * n
+        labels[0] = "A cat holding a sign that says hello world"
+        labels[1] = "a vibrant anime mountain lands"
+        labels[2] = "a highly detailed anime landscape,big tree on the water, epic sky,golden grass,detailed."
+        labels[3] = "a woman"
+        labels[4] = "fruit cream cake"
+        labels[5] = "bright red phlox flowers bloom in a garden"
+        labels[6] = "the cambridge shoulder bag"
+        labels[7] = "A yellow mushroom grows in the forest"
+        labels[8] = "a dog"
+        labels[9] = "A lovely corgi is taking a walk under the sea"
+
+        y_null = model.y_embedder.y_embedding[None].repeat(n, 1, 1)[:, None]
+        y_null = y_null.reshape(n, 77 * 768)
+
         for _ in pbar:
             # Sample inputs:
             z = torch.randn(n, model.in_channels, latent_size, latent_size, device=device)
-            if args.balanced_sampling:
-                # Use global sample indices to assign labels evenly across classes.
-                # This ensures each class index appears approximately equally often.
-                indices = (torch.arange(n, device=device) * dist.get_world_size() + rank + total)
-                y = (indices % args.num_classes).long()
-            else:
-                y = torch.randint(0, args.num_classes, (n,), device=device)
-            cls_z = torch.randn(n, args.cls, device=device)
+            y = get_clip_prompt_embeds(clip_processor.tokenizer, clip_model.text_model, labels)
+            # if args.balanced_sampling:
+            #     # Use global sample indices to assign labels evenly across classes.
+            #     # This ensures each class index appears approximately equally often.
+            #     indices = (torch.arange(n, device=device) * dist.get_world_size() + rank + total)
+            #     y = (indices % args.num_classes).long()
+            # else:
+            #     y = torch.randint(0, args.num_classes, (n,), device=device)
+            # cls_z = torch.randn(n, args.cls, device=device)
 
             # Sample images:
             sampling_kwargs = dict(
                 model=model, 
                 latents=z,
                 y=y,
+                y_null=y_null,
                 num_steps=args.num_steps, 
                 heun=args.heun,
                 cfg_scale=args.cfg_scale,
                 guidance_low=args.guidance_low,
                 guidance_high=args.guidance_high,
                 path_type=args.path_type,
-                cls_latents=cls_z,
+                cls_latents=None,
                 args=args
             )
             with torch.no_grad():
@@ -192,9 +271,10 @@ def main(args):
                     raise NotImplementedError()
 
                 # For invae, apply 0.3099 scaling factor
-                scaling_factor = 0.3099
-                samples = vae.decode(samples / scaling_factor).sample
-                samples = (samples + 1) / 2.
+                # samples = vae.decode(samples / scaling_factor).sample
+                samples = (samples * latent_std) + latent_mean
+                samples = vae.decode(samples)
+                # samples = (samples + 1) / 2.
                 samples = torch.clamp(
                     255. * samples, 0, 255
                     ).permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()
@@ -231,22 +311,23 @@ if __name__ == "__main__":
     parser.add_argument("--num-classes", type=int, default=1000)
     parser.add_argument("--resolution", type=int, choices=[256, 512], default=256)
     parser.add_argument("--fused-attn", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--qk-norm", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--qk-norm", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--latent-stats-dir", type=str, default="samples")
 
     # number of samples
-    parser.add_argument("--per-proc-batch-size", type=int, default=32)
-    parser.add_argument("--num-fid-samples", type=int, default=50_000)
+    parser.add_argument("--per-proc-batch-size", type=int, default=10)
+    parser.add_argument("--num-fid-samples", type=int, default=100)
 
     parser.add_argument("--balanced-sampling", action=argparse.BooleanOptionalAction, default=True,
                         help="If enabled, sample class labels in a balanced way so each class index appears equally often.")
 
     # sampling related hyperparameters
     parser.add_argument("--mode", type=str, default="sde")
-    parser.add_argument("--cfg-scale",  type=float, default=1.5)
+    parser.add_argument("--cfg-scale",  type=float, default=2.5)
     parser.add_argument("--cls-cfg-scale",  type=float, default=1.5)
     parser.add_argument("--projector-embed-dims", type=str, default="768")
     parser.add_argument("--path-type", type=str, default="linear", choices=["linear", "cosine"])
-    parser.add_argument("--num-steps", type=int, default=50)
+    parser.add_argument("--num-steps", type=int, default=20)
     parser.add_argument("--heun", action=argparse.BooleanOptionalAction, default=False) # only for ode
     parser.add_argument("--guidance-low", type=float, default=0.)
     parser.add_argument("--guidance-high", type=float, default=1.)

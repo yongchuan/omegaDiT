@@ -22,6 +22,7 @@ import numpy as np
 import PIL.Image
 import torch
 from tqdm import tqdm
+from torchvision import transforms
 
 from encoders import InvaeEncoder, VavaeEncoder
 
@@ -279,6 +280,10 @@ def encode_image_worker(args):
     
     return results
 
+transform = transforms.Compose([
+    transforms.ToTensor(),  # 转换为张量 (0-1范围)
+])
+
 def encode_image_worker_vavae(args):
     """Worker function for parallel VAE encoding (VAVAE).
     
@@ -295,6 +300,8 @@ def encode_image_worker_vavae(args):
     
     for idx, image_data in batch_data:
         img_tensor = torch.tensor(image_data.img).to('cuda').permute(2, 0, 1).unsqueeze(0)
+        # print(image_data)
+        # img_tensor = transform(image_data)
         latents = vae.encode(img_tensor).cpu().numpy()
         # Store index, latents, and original filename
         results.append((idx, latents, image_data.fname))

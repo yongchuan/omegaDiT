@@ -42,13 +42,13 @@ def load_encoders(enc_type, device, resolution=256):
             import timm
             if 'reg' in encoder_type:
                 try:
-                    encoder = torch.hub.load('your_path/.cache/torch/hub/facebookresearch_dinov2_main',
+                    encoder = torch.hub.load('/root/.cache/torch/hub/facebookresearch_dinov2_main',
                                             f'dinov2_vit{model_config}14_reg', source='local')
                 except:
                     encoder = torch.hub.load('facebookresearch/dinov2', f'dinov2_vit{model_config}14_reg')
             else:
                 try:
-                    encoder = torch.hub.load('your_path/.cache/torch/hub/facebookresearch_dinov2_main',
+                    encoder = torch.hub.load('/root/.cache/torch/hub/facebookresearch_dinov2_main',
                                              f'dinov2_vit{model_config}14', source='local')
                 except:
                     encoder = torch.hub.load('facebookresearch/dinov2', f'dinov2_vit{model_config}14')

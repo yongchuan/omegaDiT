@@ -42,13 +42,13 @@ class CaptionEmbedder(nn.Module):
             drop_ids = torch.rand(caption.shape[0]).to(caption.device) < self.uncond_prob
         else:
             drop_ids = force_drop_ids == 1
-        caption = torch.where(drop_ids[:, None, None, None], self.y_embedding, caption)
-        caption = caption.reshape(caption.shape[0], 77, caption.shape[3])
+        caption = torch.where(drop_ids[:, None, None], self.y_embedding, caption)
+        #caption = caption.reshape(caption.shape[0], 77, caption.shape[3])
         return caption
 
     def forward(self, caption, train, force_drop_ids=None):
         use_dropout = self.uncond_prob > 0
-        print(caption.shape)
+        #print(caption.shape)
         if (train and use_dropout) or (force_drop_ids is not None):
             caption = self.token_drop(caption, force_drop_ids)
         # else:
@@ -157,6 +157,7 @@ class Attention(nn.Module):
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
         norm_layer: nn.Module = nn.RMSNorm,
+        use_v1_residual: bool = True,
     ) -> None:
         super().__init__()
         assert dim % num_heads == 0, "dim should be divisible by num_heads"
@@ -175,6 +176,10 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
+        if use_v1_residual:
+            self.v1_lambda = nn.Parameter(torch.tensor(0.5))
+        self.v_last = None
+
         # for API compatibility with timm Attention
         self.fused_attn = False
 
@@ -183,6 +188,7 @@ class Attention(nn.Module):
         x: torch.Tensor,
         rope: Optional[VisionRotaryEmbeddingFast] = None,
         rope_ids: Optional[torch.Tensor] = None,
+        v1: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Multi-head self-attention with optional 2D RoPE.
 
@@ -202,6 +208,9 @@ class Attention(nn.Module):
         k = self.k(x).reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         v = self.v(x).reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         q, k = self.q_norm(q), self.k_norm(k)
+        self.v_last = v
+        if v1 is not None:
+            v = self.v1_lambda * v1 + (1.0 - self.v1_lambda) * v
 
         if rope is not None:
             # if rope_ids.shape[1] == 64:
@@ -251,7 +260,7 @@ class SiTBlock(nn.Module):
     """
     A SiT block with adaptive layer norm zero (adaLN-Zero) conditioning.
     """
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, **block_kwargs):
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, use_v1_residual: bool = True, **block_kwargs):
         super().__init__()
         self.norm1 = nn.RMSNorm(hidden_size, elementwise_affine=True, eps=1e-6)
         self.attn = Attention(
@@ -259,6 +268,7 @@ class SiTBlock(nn.Module):
             num_heads=num_heads,
             qkv_bias=True,
             qk_norm=False,
+            use_v1_residual=use_v1_residual,
         )
         if "fused_attn" in block_kwargs.keys():
             self.attn.fused_attn = block_kwargs["fused_attn"]
@@ -280,6 +290,7 @@ class SiTBlock(nn.Module):
         c: torch.Tensor,
         feat_rope: Optional[VisionRotaryEmbeddingFast] = None,
         rope_ids: Optional[torch.Tensor] = None,
+        v1: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         aout = self.adaLN_modulation(c)
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
@@ -287,16 +298,11 @@ class SiTBlock(nn.Module):
         )
         norm_x = self.norm1(x)
         attnInput = modulate(norm_x, shift_msa, scale_msa)
-        # if rope_ids.shape[1] == 64:
-        #     print("aout:", aout.shape, aout)
-        #     print("x1:", x.shape, x[:, 77:, :])
-        #     print("x2:", x.shape, x[:, 78:, :])
-        #     print("norm_x:", norm_x.shape, norm_x)
-        #     print("attnInput:", attnInput.shape, attnInput)
         x = x + gate_msa.unsqueeze(1) * self.attn(
             attnInput,
             rope=feat_rope,
             rope_ids=rope_ids,
+            v1=v1,
         )
         x = x + gate_mlp.unsqueeze(1) * self.mlp(
             modulate(self.norm2(x), shift_mlp, scale_mlp)
@@ -394,18 +400,20 @@ class SiT(nn.Module):
         self.t_embedder = TimestepEmbedder(hidden_size) # timestep embedding type
         # self.y_embedder = LabelEmbedder(num_classes, hidden_size, class_dropout_prob)
         approx_gelu = lambda: nn.GELU(approximate="tanh")
-        self.y_embedder = CaptionEmbedder(in_channels=768, hidden_size=hidden_size, uncond_prob=0.0, act_layer=approx_gelu, token_num=self.contxt_len)
+        self.y_embedder = CaptionEmbedder(in_channels=768, hidden_size=hidden_size, uncond_prob=0.1, act_layer=approx_gelu, token_num=self.contxt_len)
         num_patches = self.x_embedder.num_patches
         # Will use fixed sin-cos embedding:
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
 
         blocks = []
         for i in range(depth):
+            use_v1_residual = i > 0
             blocks.append(
                 SiTBlock(
                     hidden_size,
                     num_heads,
                     mlp_ratio=mlp_ratio,
+                    use_v1_residual=use_v1_residual,
                     **block_kwargs,
                 )
             )
@@ -592,16 +600,24 @@ class SiT(nn.Module):
         # 1) Encoder fθ on all tokens (dense, shallow)
         # ------------------------------------------------------------------
         rope_ids_enc = rope_ids_full
+        
+        #print("y:", y.shape)
+        #print("x:", x.shape)
 
         x_enc = torch.cat([y, x], dim=1)  #[77 + 256 = 333]
         # print("x:", x)
         # x_enc.register_hook(save_grad('encoder_diff:'))
+        v1_full = None
         for i in range(self.num_f):
-            x_enc = self.blocks[i](x_enc, c, self.feat_rope, rope_ids_enc)  # (N, T, D)
-        # print("x_enc:", x_enc[:, 77:, :])
+            x_enc = self.blocks[i](x_enc, c, self.feat_rope, rope_ids_enc, v1=v1_full)  # (N, T, D)
+
+            if v1_full is None:
+                v1_full = self.blocks[i].attn.v_last
+        # print("v1_full:", v1_full)
         # Use encoder output for z-projections (REPA / SPRINT z_t)
+        zs_in = x_enc[:, self.contxt_len: :]
         zs = [
-            projector(x_enc.reshape(-1, D)).reshape(N, -1, z_dim)
+            projector(zs_in.reshape(-1, D)).reshape(N, -1, z_dim)
             for projector, z_dim in zip(self.projectors, self.z_dims)
         ]
 
@@ -621,13 +637,23 @@ class SiT(nn.Module):
         else:
             rope_ids_sparse = rope_ids_full
 
+        if ids_keep is not None:
+            vs_head = v1_full[:, :, :self.contxt_len, :]
+            v1_sparse = v1_full[:, :, self.contxt_len:, :].gather(
+                2,
+                ids_keep[:, None, :, None].expand(-1, v1_full.size(1), -1, v1_full.size(-1)),
+            )
+            v1_sparse = torch.cat((vs_head, v1_sparse), dim=2)
+        else:
+            v1_sparse = v1_full
+
         # ------------------------------------------------------------------
         # 3) Middle blocks gθ on sparse tokens
         # ------------------------------------------------------------------
         x_mid = x_sparse
         # print("x_mid_input:", x_mid)
         for i in range(self.num_f, self.num_f + self.num_g):
-            x_mid = self.blocks[i](x_mid, c, self.feat_rope, rope_ids_sparse)  # (N, T_keep, D)
+            x_mid = self.blocks[i](x_mid, c, self.feat_rope, rope_ids_sparse, v1=v1_sparse)  # (N, T_keep, D)
 
         # print("x_mid:", x_mid.shape, x_mid)
         # x_mid.register_hook(save_grad('dx_mid:'))
@@ -692,7 +718,7 @@ class SiT(nn.Module):
         # ------------------------------------------------------------------
         x_dec = h_in
         for i in range(self.num_f + self.num_g, self.depth):
-            x_dec = self.blocks[i](x_dec, c, self.feat_rope, rope_ids_full)
+            x_dec = self.blocks[i](x_dec, c, self.feat_rope, rope_ids_full, v1=v1_full)
 
         img_o = x_dec[:, self.contxt_len:, ...]
 
@@ -802,76 +828,3 @@ SiT_models = {
     'SiT-B/1':  SiT_B_1,   'SiT-B/2':  SiT_B_2,   'SiT-B/4':  SiT_B_4,
     'SiT-S/1':  SiT_S_1,   'SiT-S/2':  SiT_S_2,   'SiT-S/4':  SiT_S_4,
 }
-
-# grads = {}
-#
-# def save_grad(name):
-#     def hook(grad):
-#         print(name, grad.shape, grad, name)
-#         grads[name] = grad
-#     return hook
-#
-# def save_grad2(name):
-#     def hook(grad):
-#         print(name, grad.shape, grad[:, 77:, :], name)
-#         grads[name] = grad
-#     return hook
-#
-# class EncodeTensor(JSONEncoder):
-#     def default(self, obj):
-#         if isinstance(obj, torch.Tensor):
-#             return obj.cpu().detach().numpy().tolist()
-#
-# torch.set_printoptions(precision=12)
-# torch.manual_seed(23)
-#
-# dit = SiT(input_size=16, in_channels=32, depth=12, hidden_size=768, decoder_hidden_size=768, patch_size=1, num_heads=12)
-#
-# print(dit)
-#
-# N = 2
-# C = 32
-# H = 16
-# W = 16
-#
-# TS = 77
-# TD = 768
-#
-# x = torch.rand(N, C, H, W)
-# x.requires_grad_(True)
-#
-# context = torch.randn(N, TS, TD)
-# context.requires_grad_(True)
-#
-# t = torch.tensor([0.1, 0.8], dtype=torch.float32)
-#
-# # context.view(N * TS, TD)
-#
-# out, zs = dit(x, t, context)
-#
-# print("out:", out.shape, out)
-# print("zs:", zs)
-#
-# delta = torch.rand(N, C, H, W)
-#
-# out.backward(delta)
-#
-# print(x.grad)
-
-# state_dict = {"x": x}
-# with open('D:\\models\\dit_x.json', 'w') as json_file:
-#      json.dump(state_dict, json_file, cls=EncodeTensor)
-#
-# state_dict = {"context": context}
-# with open('D:\\models\\dit_context.json', 'w') as json_file:
-#      json.dump(state_dict, json_file, cls=EncodeTensor)
-#
-# state_dict = {"ids_keep": ids_keep}
-# with open('D:\\models\\dit_ids_keep.json', 'w') as json_file:
-#      json.dump(state_dict, json_file, cls=EncodeTensor)
-#
-# with open('D:\\models\\dit_weight.json', 'w') as json_file:
-#      json.dump(dit.state_dict(), json_file, cls=EncodeTensor)
-# state_dict = {"delta": delta}
-# with open('D:\\models\\dit_delta.json', 'w') as json_file:
-#      json.dump(state_dict, json_file, cls=EncodeTensor)
