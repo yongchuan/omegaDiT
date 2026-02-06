@@ -27,7 +27,7 @@
     <td align="center"><sub>porcelain girl's face. fine texture. surreal</sub></td>
     <td align="center"><sub>Poster of a mechanical cat, techical Schematics viewed from front.</sub></td>
     <td align="center"><sub>a car runing on the sand.</sub></td>
-    <td align="center"><sub>a highly detailed anime sexy beauty with big breasts.</sub></td>
+    <td align="center"><sub>a highly detailed anime sexy beauty.</sub></td>
   </tr>
   <tr>
     <td width="25%"><img src="demos/9.png" width="100%"></td>
@@ -232,7 +232,7 @@ my_dataset/
 
 ```bash
 # 使用 encode_vavae 命令将图像编码为 VA-VAE 潜在向量
-python preprocessing/dataset_tools.py encode_vavae \
+python preprocessing/dataset_tools.py encode-vavae \
     --config=tokenizer/configs/vavae_f16d32_vfdinov2.yaml \
     --source=my_dataset/raw_images \
     --dest=my_dataset/vae-in \
