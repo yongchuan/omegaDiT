@@ -396,18 +396,13 @@ exps/<exp-name>/checkpoints/<step>.pt
 ## 采样与评估
 
 ### 生成样本
+- 修改eval.sh的相关参数和路径
+- 修改generate.py 中 155 行 get_latent_stats 的路径参数
+- 支持使用文本提示进行采样，在 `generate.py` 中可以设置硬编码的提示词。
 
 ```bash
-python generate.py \
-    --model="SiT-B/1" \
-    --ckpt="/path/to/checkpoint.pt" \
-    --sample-dir="samples/" \
-    --num-fid-samples=50000 \
-    --cfg-scale=1.5 \
-    --num-steps=250
+sh eval.sh
 ```
-
-支持使用文本提示进行采样，在 `generate.py` 中可以设置硬编码的提示词。
 
 ### 计算评估指标
 

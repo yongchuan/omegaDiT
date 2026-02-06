@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import math
 
+
 def expand_t_like_x(t, x_cur):
     """Function to reshape time t to broadcastable dimension of x
     Args:
@@ -11,6 +12,7 @@ def expand_t_like_x(t, x_cur):
     dims = [1] * (len(x_cur.size()) - 1)
     t = t.view(t.size(0), *dims)
     return t
+
 
 def get_score_from_velocity(vt, xt, t, path_type="linear"):
     """Wrapper function: transfrom velocity prediction model to score
@@ -27,13 +29,13 @@ def get_score_from_velocity(vt, xt, t, path_type="linear"):
         alpha_t = torch.cos(t * np.pi / 2)
         sigma_t = torch.sin(t * np.pi / 2)
         d_alpha_t = -np.pi / 2 * torch.sin(t * np.pi / 2)
-        d_sigma_t =  np.pi / 2 * torch.cos(t * np.pi / 2)
+        d_sigma_t = np.pi / 2 * torch.cos(t * np.pi / 2)
     else:
         raise NotImplementedError
 
     mean = xt
     reverse_alpha_ratio = alpha_t / d_alpha_t
-    var = sigma_t**2 - reverse_alpha_ratio * d_sigma_t * sigma_t
+    var = sigma_t ** 2 - reverse_alpha_ratio * d_sigma_t * sigma_t
     score = (reverse_alpha_ratio * vt - mean) / var
 
     return score
@@ -49,6 +51,7 @@ def apply_time_shift(t, shift_dim, shift_base=4096):
     t_shifted = torch.clamp(t_shifted, 0.0, 1.0)
     return t_shifted
 
+
 def euler_maruyama_sampler(
         model,
         latents,
@@ -61,13 +64,12 @@ def euler_maruyama_sampler(
         path_type="linear",
         cls_latents=None,
         args=None
-        ):
+):
     # setup conditioning
     if cfg_scale > 1.0:
         y_null = torch.tensor([1000] * y.size(0), device=y.device)
-        #[1000, 1000]
+        # [1000, 1000]
     _dtype = latents.dtype
-
 
     t_steps = torch.linspace(1., 0.04, num_steps, dtype=torch.float64)
     t_steps = torch.cat([t_steps, torch.tensor([0.], dtype=torch.float64)])
@@ -78,7 +80,6 @@ def euler_maruyama_sampler(
     x_next = latents.to(torch.float64)
     cls_x_next = cls_latents.to(torch.float64)
     device = x_next.device
-
 
     with torch.no_grad():
         for i, (t_cur, t_next) in enumerate(zip(t_steps[:-2], t_steps[1:-1])):
@@ -106,8 +107,9 @@ def euler_maruyama_sampler(
 
             # compute drift
             v_cur, _, cls_v_cur = model(
-                model_input.to(dtype=_dtype), time_input.to(dtype=_dtype), **kwargs, cls_token=cls_model_input.to(dtype=_dtype)
-                )
+                model_input.to(dtype=_dtype), time_input.to(dtype=_dtype), **kwargs,
+                cls_token=cls_model_input.to(dtype=_dtype)
+            )
             v_cur = v_cur.to(torch.float64)
             cls_v_cur = cls_v_cur.to(torch.float64)
 
@@ -122,11 +124,11 @@ def euler_maruyama_sampler(
                 d_cur = d_cur_uncond + cfg_scale * (d_cur_cond - d_cur_uncond)
 
                 cls_d_cur_cond, cls_d_cur_uncond = cls_d_cur.chunk(2)
-                if args.cls_cfg_scale >0:
+                if args.cls_cfg_scale > 0:
                     cls_d_cur = cls_d_cur_uncond + args.cls_cfg_scale * (cls_d_cur_cond - cls_d_cur_uncond)
                 else:
                     cls_d_cur = cls_d_cur_cond
-            x_next =  x_cur + d_cur * dt + torch.sqrt(diffusion) * deps
+            x_next = x_cur + d_cur * dt + torch.sqrt(diffusion) * deps
             cls_x_next = cls_x_cur + cls_d_cur * dt + torch.sqrt(diffusion) * cls_deps
 
     # last step
@@ -142,19 +144,18 @@ def euler_maruyama_sampler(
     else:
         model_input = x_cur
         cls_model_input = cls_x_cur
-        y_cur = y            
+        y_cur = y
     kwargs = dict(y=y_cur)
     time_input = torch.ones(model_input.size(0)).to(
         device=device, dtype=torch.float64
-        ) * t_cur
-    
+    ) * t_cur
+
     # compute drift
     v_cur, _, cls_v_cur = model(
         model_input.to(dtype=_dtype), time_input.to(dtype=_dtype), **kwargs, cls_token=cls_model_input.to(dtype=_dtype)
-        )
+    )
     v_cur = v_cur.to(torch.float64)
     cls_v_cur = cls_v_cur.to(torch.float64)
-
 
     s_cur = get_score_from_velocity(v_cur, model_input, time_input, path_type=path_type)
     cls_s_cur = get_score_from_velocity(cls_v_cur, cls_model_input, time_input, path_type=path_type)
@@ -178,25 +179,27 @@ def euler_maruyama_sampler(
 
     return mean_x
 
+
 def euler_maruyama_sampler_path_drop(
         model,
         latents,
         y,
+        y_null,
         num_steps=20,
         heun=False,  # not used, just for compatability
-        cfg_scale=1.0,
+        cfg_scale=2.5,
         guidance_low=0.0,
         guidance_high=1.0,
         path_type="linear",
         cls_latents=None,
         args=None
-        ):
+):
     # setup conditioning
-    if cfg_scale > 1.0:
-        y_null = torch.tensor([1000] * y.size(0), device=y.device)
-        #[1000, 1000]
-    _dtype = latents.dtype
+    # if cfg_scale > 1.0:
+    #     y_null = torch.tensor([1000] * y.size(0), device=y.device)
+    # [1000, 1000]
 
+    _dtype = latents.dtype
 
     t_steps = torch.linspace(1., 0.04, num_steps, dtype=torch.float64)
     t_steps = torch.cat([t_steps, torch.tensor([0.], dtype=torch.float64)])
@@ -205,64 +208,66 @@ def euler_maruyama_sampler_path_drop(
         shift_dim = latents.shape[1] * latents.shape[2] * latents.shape[3]
         shift_base = getattr(args, "shift_base", 4096)
         t_steps = apply_time_shift(t_steps, shift_dim, shift_base)
-    
-    x_next = latents.to(torch.float64)
-    cls_x_next = cls_latents.to(torch.float64)
-    device = x_next.device
 
+    x_next = latents.to(torch.float64)
+    # cls_x_next = cls_latents.to(torch.float64)
+    device = x_next.device
 
     with torch.no_grad():
         for i, (t_cur, t_next) in enumerate(zip(t_steps[:-2], t_steps[1:-1])):
             dt = t_next - t_cur
             x_cur = x_next
-            cls_x_cur = cls_x_next
+            # cls_x_cur = cls_x_next
 
             use_cfg = cfg_scale > 1.0 and t_cur <= guidance_high and t_cur >= guidance_low
 
             if use_cfg:
                 time_input = torch.ones(x_cur.size(0)).to(device=device, dtype=torch.float64) * t_cur
                 # Conditional branch (no path drop)
-                v_cond, _, cls_v_cond = model(
+                v_cond, _ = model(
                     x_cur.to(dtype=_dtype),
                     time_input.to(dtype=_dtype),
                     y=y,
-                    cls_token=cls_x_cur.to(dtype=_dtype),
+                    # cls_token=cls_x_cur.to(dtype=_dtype),
                     uncond=False,
                 )
                 # Unconditional branch (enable path drop)
-                v_uncond, _, cls_v_uncond = model(
+                # print(y.shape)
+                # print(y_null.shape)
+
+                v_uncond, _ = model(
                     x_cur.to(dtype=_dtype),
                     time_input.to(dtype=_dtype),
                     y=y_null,
-                    cls_token=cls_x_cur.to(dtype=_dtype),
+                    # cls_token=cls_x_cur.to(dtype=_dtype),
                     uncond=True,
                 )
             else:
                 model_input = x_cur
-                cls_model_input = cls_x_cur
+                # cls_model_input = cls_x_cur
                 y_cur = y
                 kwargs = dict(y=y_cur)
                 time_input = torch.ones(model_input.size(0)).to(device=device, dtype=torch.float64) * t_cur
 
-                v_cur, _, cls_v_cur = model(
+                v_cur, _ = model(
                     model_input.to(dtype=_dtype),
                     time_input.to(dtype=_dtype),
                     **kwargs,
-                    cls_token=cls_model_input.to(dtype=_dtype),
+                    # cls_token=cls_model_input.to(dtype=_dtype),
                 )
             diffusion = compute_diffusion(t_cur)
 
             eps_i = torch.randn_like(x_cur).to(device)
-            cls_eps_i = torch.randn_like(cls_x_cur).to(device)
+            # cls_eps_i = torch.randn_like(cls_x_cur).to(device)
             deps = eps_i * torch.sqrt(torch.abs(dt))
-            cls_deps = cls_eps_i * torch.sqrt(torch.abs(dt))
+            # cls_deps = cls_eps_i * torch.sqrt(torch.abs(dt))
 
             # compute drift
             if use_cfg:
                 v_cond = v_cond.to(torch.float64)
                 v_uncond = v_uncond.to(torch.float64)
-                cls_v_cond = cls_v_cond.to(torch.float64)
-                cls_v_uncond = cls_v_uncond.to(torch.float64)
+                # cls_v_cond = cls_v_cond.to(torch.float64)
+                # cls_v_uncond = cls_v_uncond.to(torch.float64)
 
                 s_cond = get_score_from_velocity(v_cond, x_cur, time_input, path_type=path_type)
                 d_cond = v_cond - 0.5 * diffusion * s_cond
@@ -272,33 +277,33 @@ def euler_maruyama_sampler_path_drop(
 
                 d_cur = d_uncond + cfg_scale * (d_cond - d_uncond)
 
-                cls_s_cond = get_score_from_velocity(cls_v_cond, cls_x_cur, time_input, path_type=path_type)
-                cls_d_cond = cls_v_cond - 0.5 * diffusion * cls_s_cond
+                # cls_s_cond = get_score_from_velocity(cls_v_cond, cls_x_cur, time_input, path_type=path_type)
+                # cls_d_cond = cls_v_cond - 0.5 * diffusion * cls_s_cond
+                #
+                # cls_s_uncond = get_score_from_velocity(cls_v_uncond, cls_x_cur, time_input, path_type=path_type)
+                # cls_d_uncond = cls_v_uncond - 0.5 * diffusion * cls_s_uncond
 
-                cls_s_uncond = get_score_from_velocity(cls_v_uncond, cls_x_cur, time_input, path_type=path_type)
-                cls_d_uncond = cls_v_uncond - 0.5 * diffusion * cls_s_uncond
-
-                if args.cls_cfg_scale > 0:
-                    cls_d_cur = cls_d_uncond + args.cls_cfg_scale * (cls_d_cond - cls_d_uncond)
-                else:
-                    cls_d_cur = cls_d_cond
+                # if args.cls_cfg_scale > 0:
+                #     cls_d_cur = cls_d_uncond + args.cls_cfg_scale * (cls_d_cond - cls_d_uncond)
+                # else:
+                #     cls_d_cur = cls_d_cond
             else:
                 v_cur = v_cur.to(torch.float64)
-                cls_v_cur = cls_v_cur.to(torch.float64)
+                # cls_v_cur = cls_v_cur.to(torch.float64)
 
                 s_cur = get_score_from_velocity(v_cur, model_input, time_input, path_type=path_type)
                 d_cur = v_cur - 0.5 * diffusion * s_cur
 
-                cls_s_cur = get_score_from_velocity(cls_v_cur, cls_model_input, time_input, path_type=path_type)
-                cls_d_cur = cls_v_cur - 0.5 * diffusion * cls_s_cur
-            x_next =  x_cur + d_cur * dt + torch.sqrt(diffusion) * deps
-            cls_x_next = cls_x_cur + cls_d_cur * dt + torch.sqrt(diffusion) * cls_deps
+                # cls_s_cur = get_score_from_velocity(cls_v_cur, cls_model_input, time_input, path_type=path_type)
+                # cls_d_cur = cls_v_cur - 0.5 * diffusion * cls_s_cur
+            x_next = x_cur + d_cur * dt + torch.sqrt(diffusion) * deps
+            # cls_x_next = cls_x_cur + cls_d_cur * dt + torch.sqrt(diffusion) * cls_deps
 
     # last step
     t_cur, t_next = t_steps[-2], t_steps[-1]
     dt = t_next - t_cur
     x_cur = x_next
-    cls_x_cur = cls_x_next
+    # cls_x_cur = cls_x_next
 
     use_cfg = cfg_scale > 1.0 and t_cur <= guidance_high and t_cur >= guidance_low
 
@@ -306,27 +311,27 @@ def euler_maruyama_sampler_path_drop(
         time_input = torch.ones(x_cur.size(0)).to(device=device, dtype=torch.float64) * t_cur
 
         # Conditional branch (no path drop)
-        v_cond, _, cls_v_cond = model(
+        v_cond, _ = model(
             x_cur.to(dtype=_dtype),
             time_input.to(dtype=_dtype),
             y=y,
-            cls_token=cls_x_cur.to(dtype=_dtype),
+            # cls_token=cls_x_cur.to(dtype=_dtype),
             uncond=False,
         )
 
         # Unconditional branch (enable path drop)
-        v_uncond, _, cls_v_uncond = model(
+        v_uncond, _ = model(
             x_cur.to(dtype=_dtype),
             time_input.to(dtype=_dtype),
             y=y_null,
-            cls_token=cls_x_cur.to(dtype=_dtype),
+            # cls_token=cls_x_cur.to(dtype=_dtype),
             uncond=True,
         )
 
         v_cond = v_cond.to(torch.float64)
         v_uncond = v_uncond.to(torch.float64)
-        cls_v_cond = cls_v_cond.to(torch.float64)
-        cls_v_uncond = cls_v_uncond.to(torch.float64)
+        # cls_v_cond = cls_v_cond.to(torch.float64)
+        # cls_v_uncond = cls_v_uncond.to(torch.float64)
 
         s_cond = get_score_from_velocity(v_cond, x_cur, time_input, path_type=path_type)
         s_uncond = get_score_from_velocity(v_uncond, x_cur, time_input, path_type=path_type)
@@ -337,42 +342,42 @@ def euler_maruyama_sampler_path_drop(
 
         d_cur = d_uncond + cfg_scale * (d_cond - d_uncond)
 
-        cls_s_cond = get_score_from_velocity(cls_v_cond, cls_x_cur, time_input, path_type=path_type)
-        cls_s_uncond = get_score_from_velocity(cls_v_uncond, cls_x_cur, time_input, path_type=path_type)
+        # cls_s_cond = get_score_from_velocity(cls_v_cond, cls_x_cur, time_input, path_type=path_type)
+        # cls_s_uncond = get_score_from_velocity(cls_v_uncond, cls_x_cur, time_input, path_type=path_type)
+        #
+        # cls_d_cond = cls_v_cond - 0.5 * diffusion * cls_s_cond
+        # cls_d_uncond = cls_v_uncond - 0.5 * diffusion * cls_s_uncond
 
-        cls_d_cond = cls_v_cond - 0.5 * diffusion * cls_s_cond
-        cls_d_uncond = cls_v_uncond - 0.5 * diffusion * cls_s_uncond
-
-        if args.cls_cfg_scale > 0:
-            cls_d_cur = cls_d_uncond + args.cls_cfg_scale * (cls_d_cond - cls_d_uncond)
-        else:
-            cls_d_cur = cls_d_cond
+        # if args.cls_cfg_scale > 0:
+        #     cls_d_cur = cls_d_uncond + args.cls_cfg_scale * (cls_d_cond - cls_d_uncond)
+        # else:
+        #     cls_d_cur = cls_d_cond
     else:
         model_input = x_cur
-        cls_model_input = cls_x_cur
+        # cls_model_input = cls_x_cur
         y_cur = y
         kwargs = dict(y=y_cur)
         time_input = torch.ones(model_input.size(0)).to(
             device=device, dtype=torch.float64
         ) * t_cur
 
-        v_cur, _, cls_v_cur = model(
+        v_cur, _ = model(
             model_input.to(dtype=_dtype),
             time_input.to(dtype=_dtype),
             **kwargs,
-            cls_token=cls_model_input.to(dtype=_dtype),
+            # cls_token=cls_model_input.to(dtype=_dtype),
         )
         v_cur = v_cur.to(torch.float64)
-        cls_v_cur = cls_v_cur.to(torch.float64)
+        # cls_v_cur = cls_v_cur.to(torch.float64)
 
         s_cur = get_score_from_velocity(v_cur, model_input, time_input, path_type=path_type)
-        cls_s_cur = get_score_from_velocity(cls_v_cur, cls_model_input, time_input, path_type=path_type)
+        # cls_s_cur = get_score_from_velocity(cls_v_cur, cls_model_input, time_input, path_type=path_type)
 
         diffusion = compute_diffusion(t_cur)
         d_cur = v_cur - 0.5 * diffusion * s_cur
-        cls_d_cur = cls_v_cur - 0.5 * diffusion * cls_s_cur  # d_cur [b, 4, 32 ,32]
+        # cls_d_cur = cls_v_cur - 0.5 * diffusion * cls_s_cur  # d_cur [b, 4, 32 ,32]
 
     mean_x = x_cur + dt * d_cur
-    cls_mean_x = cls_x_cur + dt * cls_d_cur
+    # cls_mean_x = cls_x_cur + dt * cls_d_cur
 
     return mean_x

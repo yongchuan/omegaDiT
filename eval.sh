@@ -17,7 +17,7 @@ python -m torch.distributed.launch --master_port=$random_number --nproc_per_node
   --ckpt ${SAVE_PATH}/checkpoints/${STEP}.pt \
   --path-type=linear \
   --projector-embed-dims=768 \
-  --per-proc-batch-size=64 \
+  --per-proc-batch-size=10 \
   --mode=sde \
   --num-steps=${NUM_STEP} \
   --cfg-scale=${CFG_SCALE} \

@@ -152,7 +152,7 @@ def main(args):
     vae.model.requires_grad_(False)
     # channels = 32  # invae uses 32 channels
 
-    latent_mean, latent_std = get_latent_stats("/home/home/omega/data_dir/vae-in/")
+    latent_mean, latent_std = get_latent_stats("dataset/vae-in/")
     # move to device
     latent_mean = latent_mean.clone().detach().to(device)
     latent_std = latent_std.clone().detach().to(device)
