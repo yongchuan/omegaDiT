@@ -131,10 +131,12 @@ def main(args):
         assert args.resolution == 256
         assert args.mode == "sde"
         ckpt = torch.load(args.ckpt, map_location=f'cuda:{device}', weights_only=False)
+        #print(ckpt)
         state_dict = ckpt['ema'] if isinstance(ckpt, dict) and 'ema' in ckpt else ckpt
     else:
         ckpt = torch.load(ckpt_path, map_location=f'cuda:{device}', weights_only=False)
-        state_dict = ckpt['ema'] if isinstance(ckpt, dict) and 'ema' in ckpt else ckpt
+        #print(ckpt['model'])
+        state_dict = ckpt['model'] if isinstance(ckpt, dict) and 'model' in ckpt else ckpt
 
     model.load_state_dict(state_dict)
     #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -228,7 +230,7 @@ def main(args):
         labels[9] = "A lovely corgi is taking a walk under the sea"
 
         y_null = model.y_embedder.y_embedding[None].repeat(n, 1, 1)[:, None]
-        y_null = y_null.reshape(n, 77 * 768)
+        y_null = y_null.reshape(n, 77, 768)
 
         for _ in pbar:
             # Sample inputs:
@@ -245,11 +247,11 @@ def main(args):
 
             # Sample images:
             sampling_kwargs = dict(
-                model=model, 
+                model=model,
                 latents=z,
                 y=y,
                 y_null=y_null,
-                num_steps=args.num_steps, 
+                num_steps=args.num_steps,
                 heun=args.heun,
                 cfg_scale=args.cfg_scale,
                 guidance_low=args.guidance_low,
@@ -273,8 +275,8 @@ def main(args):
                 # For invae, apply 0.3099 scaling factor
                 # samples = vae.decode(samples / scaling_factor).sample
                 samples = (samples * latent_std) + latent_mean
-                samples = vae.decode(samples)
-                # samples = (samples + 1) / 2.
+                samples = vae.model.decode(samples)
+                samples = (samples + 1) / 2.
                 samples = torch.clamp(
                     255. * samples, 0, 255
                     ).permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()
@@ -327,7 +329,7 @@ if __name__ == "__main__":
     parser.add_argument("--cls-cfg-scale",  type=float, default=1.5)
     parser.add_argument("--projector-embed-dims", type=str, default="768")
     parser.add_argument("--path-type", type=str, default="linear", choices=["linear", "cosine"])
-    parser.add_argument("--num-steps", type=int, default=20)
+    parser.add_argument("--num-steps", type=int, default=250)
     parser.add_argument("--heun", action=argparse.BooleanOptionalAction, default=False) # only for ode
     parser.add_argument("--guidance-low", type=float, default=0.)
     parser.add_argument("--guidance-high", type=float, default=1.)
