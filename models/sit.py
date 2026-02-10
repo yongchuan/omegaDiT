@@ -392,10 +392,10 @@ class SiT(nn.Module):
         assert self.num_g >= 0, "depth too small for SPRINT split"
 
         # Token drop ratio r (fraction of tokens to drop in sparse path)
-        self.sprint_drop_ratio = 0.75
+        self.sprint_drop_ratio = 0.0
 
         # Path-drop learning probability p (drop whole sparse path during training)
-        self.path_drop_prob = 0.99
+        self.path_drop_prob = 0.05
 
         # [MASK] token for padding dropped positions
         self.mask_token = nn.Parameter(torch.zeros(1, 1, hidden_size))
